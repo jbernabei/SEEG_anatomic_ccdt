@@ -7,7 +7,10 @@
 clear all
 
 % load required data
-load nodeIDsForJohn
+%load nodeIDsForJohn
+load powRT_sIall_10mspre
+load graphRT_sIall_10mspre
+load CCDTnodeAnalyze
 
 load all_regions_raw
 
@@ -23,6 +26,20 @@ session_list = {'HUP069','HUP133','HUP133','HUP136','HUP139','HUP140',...
                 'HUP171','HUP178','HUP179','HUP179','HUP181','HUP182',...
                 'HUP187','HUP191','HUP191'};
             
+%% quadrant analysis: define quadrants
+pow_quad = zeros(size(fPv));
+qexp_quad = zeros(size(fQv));
+
+pow_quad(find((fPv>0).*(sPv>0))) = 1;
+pow_quad(find((fPv<0).*(sPv>0))) = 2;
+pow_quad(find((fPv<0).*(sPv<0))) = 3;
+pow_quad(find((fPv>0).*(sPv<0))) = 4;
+
+qexp_quad(find((fQv>0).*(sQv>0))) = 1;
+qexp_quad(find((fQv<0).*(sQv>0))) = 2;
+qexp_quad(find((fQv<0).*(sQv<0))) = 3;
+qexp_quad(find((fQv>0).*(sQv<0))) = 4;
+      
 %% create EVE roi list bilateral
 % we're taking all regions besides 'background' and combining R + L
 EVE_roi_list_bilat{1,1} = 'Background';
@@ -45,28 +62,42 @@ paralimbic_wm = [41,39,40,11,47,101,100,99,73,107];
 commissural = [51,52,53,111,112,113];
 
 frontal_cortex = {'SFG', 'MFG', 'IFG', 'precentral', 'GRe', 'MOrG', 'POrG'};
-temporoparietal_cortex = {'MTG', 'ITG', 'STG', 'FuG', 'AnG', 'SMG', 'SPL'};
+temporoparietal_cortex = {'MTG', 'ITG', 'STG', 'FuG', 'AnG', 'SMG', 'SPL','postcentral'};
 paralimbic_GM = {'Hippocampus','Amygdala','PHG','cingulate','LiG','Ent','insula'};
 
 frontal_cortex_eve = [3,4,5,6,22,24,91,92,93,94,109,112];
-temporoparietal_cortex_eve = [1,8,12,18,19,20,23,89,96,100,106,107,108,111];
+temporoparietal_cortex_eve = [1,7,8,12,18,19,20,23,89,95,96,100,106,107,108,111];
 paralimbic_gm_eve = [2,11,13,17,25,26,27,90,99,101,105,113,114,115];
 
-all_region_inds = [frontal_cortex_eve,temporoparietal_cortex_eve,paralimbic_gm_eve]
-[c,i] = sort(all_region_inds)
-all_gm_inds = [ones(1,12),2*ones(1,14),3*ones(1,14)]
-gm_order = all_gm_inds(i)
+% all_region_inds = [frontal_cortex_eve,temporoparietal_cortex_eve,paralimbic_gm_eve]
+% [c,i] = sort(all_region_inds)
+% all_gm_inds = [ones(1,12),2*ones(1,14),3*ones(1,14)]
+% gm_order = all_gm_inds(i)
+all_sub_roi(1).data= frontal_cortex_eve;
+all_sub_roi(2).data= temporoparietal_cortex_eve;
+all_sub_roi(3).data= paralimbic_gm_eve;
+all_sub_roi(4).data= thalamo_cortical;
+all_sub_roi(5).data= frontal_association;
+all_sub_roi(6).data= temporal_association;
+all_sub_roi(7).data= paralimbic_wm;
+all_sub_roi(8).data= commissural;
 %% Electrode processing and localization for all patients
 
 for polarity = 1:2 
     
     % need different labels and thus localization for power vs qexp
     if polarity==1 
-        load graphChLbls % monopolar for graph
+        load graphRT_sIall_inst0% monopolar for graph
         polar_type = 'Monopolar';
+        quad_nodes_q = [];
+        quad_seg_q = [];
+        quad_wm_q = [];
     else 
-        load powChLbls % bipolor for power
+        load powRT_sIall_inst0 % bipolar for power
         polar_type = 'Bipolar';
+        quad_nodes_p = [];
+        quad_seg_p = [];
+        quad_wm_p = [];
     end 
     
     % T1 segmentation ROI structure containing all ROI across patients
@@ -89,6 +120,11 @@ for polarity = 1:2
         clear gm_seg_inds
         clear JHU_wm_list
         
+        clear node_type
+        clear lobe_type
+        clear seg_type
+        clear wm_type
+        
         % Load electrode names & coordinates in MNI space from CSV file
         elec_label_mni_raw = readtable(sprintf('/Users/jbernabei/Documents/PhD_Research/Neurosurgery_SEEG/improved_localization/new_%s_localization.csv',patient));
         
@@ -96,9 +132,9 @@ for polarity = 1:2
         if polarity==1
             
             % extract channel labels
-            ch_names = gchlbl{session};
+            ch_names = NFstruct(session).gchlbl;
             final_ch_names = ch_names;
-           
+            
             v = 1;
             % loop through channels and assign ROI & coords
             for e = 1:length(ch_names)
@@ -126,10 +162,12 @@ for polarity = 1:2
         else
             % however if it is bipolar and not monopolar we 
             % need to find centroids of bipolar pair
-            ch_names = gchlbl{session}; % get channel names
+            ch_names = NFstruct(session).gchlbl; % get channel names
             final_ch_names = ch_names;
             num_pairs = size(ch_names,1); % find number of bipolar pairs we need
             v = 1;
+            
+           
             
             % loop through number of channel bipolar pairs
             for e = 1:num_pairs
@@ -137,6 +175,7 @@ for polarity = 1:2
                 % get channel names
                 elec1 = ch_names{e,1}; 
                 elec2 = ch_names{e,2};
+                
                 
                 % get channel indices
                 coord_ind_1 = find(strcmp(elec_label_mni_raw{:,1},elec1));
@@ -155,7 +194,6 @@ for polarity = 1:2
                     % print if unavailable
                     fprintf('could not find electrode\n')
                     final_ch_names(e,:) = [];
-                    
                 end
             end
         end
@@ -201,6 +239,7 @@ for polarity = 1:2
         end
         
         gm_seg_inds = zeros(length(this_T1_regions),1);
+        
         for r_gm = 1:length(gm_seg_inds)
             this_region = this_T1_regions{r_gm};
             if contains(this_T1_regions{r_gm},frontal_cortex)
@@ -209,6 +248,32 @@ for polarity = 1:2
                 gm_seg_inds(r_gm) = 2;
             elseif contains(this_T1_regions{r_gm},paralimbic_GM)
                 gm_seg_inds(r_gm) = 3;
+            end
+        end
+        
+        gm_seg_label_ID = zeros(length(this_T1_regions),1);
+        for r_gm = 1:length(gm_seg_label_ID)
+            this_region = this_T1_regions{r_gm};
+            
+            % frontal
+            for r_atl = 1:length(frontal_cortex)
+                if contains(this_T1_regions{r_gm},frontal_cortex{r_atl})
+                    gm_seg_label_ID(r_gm) = r_atl;
+                end
+            end
+            
+            % temporoparietal
+            for r_atl = 1:length(temporoparietal_cortex)
+                if contains(this_T1_regions{r_gm},temporoparietal_cortex{r_atl})
+                    gm_seg_label_ID(r_gm) = r_atl+length(frontal_cortex);
+                end
+            end
+            
+            % paralimbic
+            for r_atl = 1:length(paralimbic_GM)
+                if contains(this_T1_regions{r_gm},paralimbic_GM{r_atl})
+                    gm_seg_label_ID(r_gm) = r_atl+length(frontal_cortex)+length(temporoparietal_cortex);
+                end
             end
         end
         
@@ -292,8 +357,48 @@ for polarity = 1:2
         patient_loc(polarity).session(session).lobes = all_lobe_list;
         patient_loc(polarity).session(session).t1 = this_T1_regions;
         patient_loc(polarity).session(session).seg = gm_seg_inds;
+        patient_loc(polarity).session(session).eve = EVE_wm_only';
+        patient_loc(polarity).session(session).seg_ID = gm_seg_label_ID;
         patient_loc(polarity).session(session).wm = all_wm_roi;
         patient_loc(polarity).session(session)
+        
+       
+        % quadrant based analysis
+        if polarity==1
+            quadrant_ch_names = gchQ((ssIDq==session),:);
+            this_session_quadrants = qexp_quad(ssIDq==session);
+        else
+            quadrant_ch_names = gchP((ssIDp==session),1);
+            this_session_quadrants = pow_quad(ssIDp==session);
+        end
+        
+        num_ch = length(quadrant_ch_names);
+        for e = 1:num_ch
+           try node_type(e) = type_ind(strcmp(patient_loc(polarity).session(session).names(:,1),quadrant_ch_names(e)));
+           catch ME
+               node_type(e) = 0;
+           end
+           
+           try seg_type(e) = gm_seg_inds(strcmp(patient_loc(polarity).session(session).names(:,1),quadrant_ch_names(e)));
+           catch ME
+               seg_type(e) = 0;
+           end
+           
+           try wm_type(e) = all_wm_roi(strcmp(patient_loc(polarity).session(session).names(:,1),quadrant_ch_names(e)));
+           catch ME
+               wm_type(e) = 0;
+           end
+        end
+        
+        if polarity==2
+        quad_nodes_p = [quad_nodes_p;node_type'];
+        quad_seg_p = [quad_seg_p;seg_type'];
+        quad_wm_p = [quad_wm_p;wm_type'];
+        else
+        quad_nodes_q = [quad_nodes_q;node_type'];
+        quad_seg_q = [quad_seg_q;seg_type'];
+        quad_wm_q = [quad_wm_q;wm_type'];
+        end
         
         all_T1_roi = [all_T1_roi;this_T1_regions];
     end
@@ -305,8 +410,81 @@ end
 % Frontal WM
 % Temporal WM
 
+%% do quadrant analysis
+plot_x_label = {'Front. ctx.','Temp-Par. ctx.','Paralimbic GM',...
+                'Thal.-cort. WM.','Front.-assoc. WM','Temp.-assoc. WM',...
+                'Paralimbic WM','Commissural WM','Background'};
+
+code_regions_pow = quad_seg_p.*(quad_nodes_p==1)+(quad_wm_p+3).*(quad_nodes_p==-1);
+code_regions_qexp = quad_seg_q.*(quad_nodes_q==1)+(quad_wm_q+3).*(quad_nodes_q==-1);
+
+for i = [1,3]
+    for j = [1:8]
+        
+        qexp_quad_plot(i,j) = sum((qexp_quad==i).*(code_regions_qexp==j));
+        pow_quad_plot(i,j) = sum((pow_quad==i).*(code_regions_pow==j));
+    end
+end
+
+qexp_quad_plot(2,:) = [];
+pow_quad_plot(2,:) = [];
+
+all_quad_data(1,:) = [qexp_quad_plot(1,:)-qexp_quad_plot(2,:)];
+all_quad_data(2,:) = [pow_quad_plot(1,:)-pow_quad_plot(2,:)];
+
+
+chi2Tests(qexp_quad_plot)
+chi2Tests(pow_quad_plot)
+figure(1);clf;
+bar(all_quad_data)
+legend(plot_x_label)
+xticks([1:2])
+xticklabels({'Communicability','Power'})
+ylabel('Node count')
+title('Anatomical distribution difference: quadrant 1 - quadrant 3')
+
+
+%%
+
+figure(1);clf;
+subplot(1,2,1)
+bar(qexp_quad_plot)
+legend(plot_x_label)
+xticks([1:2])
+xticklabels({'Quadrant 1','Quadrant 3'})
+ylabel('Node count')
+ylim([0 80])
+title(sprintf('Qexp, Chi-square p = %d',chi2Tests(qexp_quad_plot)))
+subplot(1,2,2)
+bar(pow_quad_plot)
+legend(plot_x_label)
+xticks([1:2])
+xticklabels({'Quadrant 1','Quadrant 3'})
+ylabel('Node count')
+ylim([0 70])
+title(sprintf('Power, Chi-square p = %f',chi2Tests(pow_quad_plot)))
+figure(2);clf;
+subplot(1,2,1)
+bar(qexp_quad_plot)
+legend('Frontal WM','Frontal GM','Temporal WM','Temporal GM')
+xticks([1:4])
+xticklabels({'Quadrant 1','Quadrant 2','Quadrant 3','Quadrant 4'})
+ylabel('Node count')
+title(sprintf('Qexp, Chi-square p = %d',chi2Tests(qexp_quad_plot)))
+subplot(1,2,2)
+bar(pow_quad_plot)
+legend('Frontal WM','Frontal GM','Temporal WM','Temporal GM')
+xticks([1:4])
+xticklabels({'Quadrant 1','Quadrant 2','Quadrant 3','Quadrant 4'})
+ylabel('Node count')
+title(sprintf('Power, Chi-square p = %f',chi2Tests(pow_quad_plot)))
 
 %% Do anatomical analysis
+
+for r = 1:8
+    which_subregions = all_sub_roi(r).data;
+    all_region_counts(r).data = zeros(length(which_subregions),2,8);
+end
 
 plot_x_label = {'Front. ctx.','Temp-Par. ctx.','Paralimbic GM',...
                 'Thal.-cort. WM.','Front.-assoc. WM','Temp.-assoc. WM',...
@@ -328,9 +506,9 @@ yy = 0;
 for metric = 1:2
     
     if metric==1
-        load graphChLbls
+        load graphRT_sIall_500mspre
     else 
-        load powChLbls
+        load powRT_sIall_500mspre
     end
     
     clear EVE_all_freq
@@ -353,14 +531,19 @@ for metric = 1:2
              seg_sig_all = [];
              wm_sig_all = [];
              background_sig_coords = [];
+             background_pval_all = [];
+             seg_pval_all = [];
+             wm_pval_all = [];
              
              
              for r = 1:9
                 seg_EVE_roi(r).data = [];
              end
              
+             patient_roi = NaN*zeros(1,27);
              seg_bvals = NaN*zeros(27,3);
-             seg_counts = NaN*zeros(27,9)
+             seg_counts = NaN*zeros(27,9);
+             EVE_100_elec = NaN*zeros(27,12);
              %clear mean_bval
              patient_roi_min = zeros(177,27);
              patient_roi_max = zeros(177,27);
@@ -382,7 +565,7 @@ for metric = 1:2
                 % get significant channels based on p value threshold
                 sig_ch = find(all_p_val<threshold(thres));
                 non_sig_ch = find(all_p_val>=.05);
-                ch_names = gchlbl{session};
+                ch_names = NFstruct(session).gchlbl;
                 
                 % *** still need to do channel parsing ***
                 
@@ -426,6 +609,8 @@ for metric = 1:2
                     sig_seg = patient_loc(metric).session(session).seg(patient_coord_mapping(patient_coord_mapping~=0));
                     sig_wm = patient_loc(metric).session(session).wm(patient_coord_mapping(patient_coord_mapping~=0));
                     sig_mni = patient_loc(metric).session(session).coords(patient_coord_mapping(patient_coord_mapping~=0),:);
+                    %sig_eve = patient_loc(metric).session(session).eve(patient_coord_mapping(patient_coord_mapping~=0),:);
+                    sig_seg_ID = patient_loc(metric).session(session).seg_ID(patient_coord_mapping(patient_coord_mapping~=0),:);
                     proc_pval = sig_p_val(patient_coord_mapping~=0);
                     proc_bval = sig_b_val(patient_coord_mapping~=0);
                     
@@ -463,7 +648,9 @@ for metric = 1:2
                         seg_counts(session,r) = length(sig_b_val(sig_seg==r));
                         seg_EVE_roi(r).data = [seg_EVE_roi(r).data;sig_b_val(sig_seg==r)];
                         seg_sig_all = [seg_sig_all; sig_b_val(sig_seg==r)];
+                        seg_pval_all = [seg_pval_all; sig_p_val(sig_seg==r)];
                         seg_sig_coords = [seg_sig_coords; sig_mni((sig_seg==r),:)];
+
                     end
                     
                     % go through WM EVE aggregate regions
@@ -472,8 +659,26 @@ for metric = 1:2
                         seg_counts(session,(r+3)) = length(sig_b_val(sig_wm==r));
                         seg_EVE_roi(r+3).data = [seg_EVE_roi(r+3).data;sig_b_val(sig_wm==r)];
                         wm_sig_all = [wm_sig_all; sig_b_val(sig_wm==r)];
+                        wm_pval_all = [wm_pval_all; sig_p_val(sig_wm==r)];
                         wm_sig_coords = [wm_sig_coords; sig_mni((sig_wm==r),:)];
                     end
+                    
+%                     for r = 1:8
+%                         which_subregions = all_sub_roi(r).data;
+%                         for qq = 1:length(which_subregions)
+%                             if r<4 
+%                                 sub_seg_high = find((sig_seg_ID==which_subregions(qq)) .*(proc_bval >0));
+%                                 sub_seg_low = find((sig_seg_ID==which_subregions(qq)) .*(proc_bval <0));
+%                             else
+%                                 sub_seg_high = find((sig_eve==which_subregions(qq)) .*(proc_bval >0));
+%                                 sub_seg_low = find((sig_eve==which_subregions(qq)) .*(proc_bval <0));
+%                             end
+%                             
+%                             all_region_counts(r).data(qq,1,z) = all_region_counts(r).data(qq,1,z)+length(sub_seg_high)
+%                             all_region_counts(r).data(qq,2,z) = all_region_counts(r).data(qq,2,z)+length(sub_seg_low)
+%                         end
+%                         
+%                     end
                     
                     
                     seg_counts(session,9) = length(sig_b_val(sig_type==0));
@@ -481,6 +686,7 @@ for metric = 1:2
                     pt_background(session,1) = nanmean(sig_b_val(sig_type==0));
                     seg_EVE_roi(9).data = [seg_EVE_roi(9).data;sig_b_val(sig_type==0)];
                     background_sig_coords = [background_sig_coords; sig_mni((sig_type==0),:)];
+                    background_pval_all = [background_pval_all;sig_p_val(sig_type==0)];
                     
                     % deterine how many nodes are in each roi
                     if thres<3
@@ -505,18 +711,23 @@ for metric = 1:2
                 
             end
             
-            figure(z);clf;
-            hold on
-            imagesc(seg_counts)
-            xticks([1:9])
-            xticklabels(plot_x_label)
-            yticks([1:27])
-            yticklabels(session_list)
-            title(sprintf('Metric = %s Frequency = %s node counts',qexp_vs_pow{metric},freq_bands{freq}))
-            colorbar
-            set(gcf,'position',[100,100,1200,900])
-            saveas(gcf,sprintf('output/Final/dec28_plots/region_counts/metric_%s_frequency_%s_seg_EVE.jpg',qexp_vs_pow{metric},freq_bands{freq}))
-            hold off
+%             figure(z);clf;
+%             hold on
+%             imagesc(seg_counts)
+%             xticks([1:9])
+%             xticklabels(plot_x_label)
+%             yticks([1:27])
+%             yticklabels(session_list)
+%             title(sprintf('Metric = %s Frequency = %s node counts',qexp_vs_pow{metric},freq_bands{freq}))
+%             colorbar
+%             set(gcf,'position',[100,100,1200,900])
+%             %saveas(gcf,sprintf('output/Final/dec28_plots/region_counts/metric_%s_frequency_%s_seg_EVE.jpg',qexp_vs_pow{metric},freq_bands{freq}))
+%             hold off
+            
+            
+            feat_nums = sum(seg_counts(:,1:9),2);
+            feat_nums(isnan(feat_nums)) = 0;
+            feat_gen(1:27,z) = feat_nums;
             
             
             all_non_sig_struct(z).data = all_non_sig;
@@ -526,11 +737,15 @@ for metric = 1:2
             
             data_table = [seg_bvals,EVE_WM,pt_background];
             
+            for r = 1:8
+                all_median_table(z,r) = nanmedian(seg_EVE_roi(r).data);  
+                all_pval(z,r) = ranksum(seg_EVE_roi(r).data,all_non_sig_struct(z).data);
+            end
             
-            %figure(z);clf
+            figure(z);clf
             hold on
             qqq= 0;
-            all_or_pt=2;
+            all_or_pt=0;
             if all_or_pt==0
             a1 = scatter(ones(1,length(all_non_sig_struct(z).data)),all_non_sig_struct(z).data,'MarkerEdgeColor',color1,'MarkerFaceColor',color1,'jitter','on')
             plot([0.75 1.25],[nanmedian(all_non_sig_struct(z).data) nanmedian(all_non_sig_struct(z).data)],'k-','LineWidth',2)
@@ -558,19 +773,19 @@ for metric = 1:2
             end
             end
             y_val = nanmax([max_regions;all_non_sig_struct(z).data(:)]);
-            num_sig = sum(p99(z).data<0.05);
-            which_sig = find(p99(z).data<0.05);
+            num_sig = sum(p99(z).data<(0.05/64));
+            which_sig = find(p99(z).data<(0.05/64));
             for j = 1:num_sig
                 stop_sig = which_sig(j)+2;
             plot([1,stop_sig], [y_val*1.1.^j,y_val*1.1.^j], '-k', 'LineWidth',2)
-            if p99(z).data(stop_sig-2)<(0.001./9)
+            if p99(z).data(stop_sig-2)<(0.001./64)
             plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), '+k')
-            elseif p99(z).data(stop_sig-2)<(0.01./9)
+            elseif p99(z).data(stop_sig-2)<(0.01./64)
                 plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), 'dk')
-            elseif p99(z).data(stop_sig-2)<(0.05./9)
+            elseif p99(z).data(stop_sig-2)<(0.05./64)
                 plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), '*k')
-            elseif p99(z).data(stop_sig-2)<0.05
-                plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), 'xk')
+%             elseif p99(z).data(stop_sig-2)<0.05
+%                 plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), 'xk')
             end
             end
             hold off
@@ -584,7 +799,7 @@ for metric = 1:2
              xticklabels(['Non-significant',plot_x_label])
             set(gcf,'position',[100,100,1333,500])
             title(sprintf('Metric = %s Frequency = %s lobar ROI',qexp_vs_pow{metric},freq_bands{freq}))
-            %saveas(gcf,sprintf('output/Final/dec21_plots/seg_GM_EVE_all/metric_%s_frequency_%s_seg_EVE.jpg',qexp_vs_pow{metric},freq_bands{freq}))
+            %saveas(gcf,sprintf('output/10jan2021/inst0/metric_%s_frequency_%s_seg_EVE.svg',qexp_vs_pow{metric},freq_bands{freq}))
             
             
             elseif all_or_pt==1
@@ -619,11 +834,11 @@ for metric = 1:2
             for j = 1:num_sig
                 stop_sig = which_sig(j)+2;
             plot([1,stop_sig], [y_val*1.1.^j,y_val*1.1.^j], '-k', 'LineWidth',2)
-            if p99(z).data(stop_sig-2)<(0.001./9)
+            if p99(z).data(stop_sig-2)<(0.001./64)
             plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), '+k')
-            elseif p99(z).data(stop_sig-2)<(0.01./9)
+            elseif p99(z).data(stop_sig-2)<(0.01./64)
                 plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), 'dk')
-            elseif p99(z).data(stop_sig-2)<(0.05./9)
+            elseif p99(z).data(stop_sig-2)<(0.05./64)
                 plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), '*k')
             elseif p99(z).data(stop_sig-2)<0.05
                 plot(mean([1,stop_sig]), y_val*(1.1.^j+0.05), 'xk')
@@ -689,7 +904,7 @@ for metric = 1:2
         
         % do rendering of three categories:
         % (1) all nodes in three groups
-        
+%         
         size(seg_sig_all)
         size(seg_sig_coords)
         
@@ -700,24 +915,22 @@ for metric = 1:2
         size(background_sig_coords)
         
         % gm
-        final_elec_matrix = [seg_sig_coords,-1.*seg_sig_all,ones(size(seg_sig_coords,1),1)];
-        %dlmwrite('output/Final/dec28_plots/render_elecs.node',final_elec_matrix,'delimiter',' ','precision',5)
-        %BrainNet_MapCfg('BrainMesh_ICBM152_smoothed.nv','output/Final/dec28_plots/render_elecs.node','dec28_option.mat',sprintf('output/Final/dec28_plots/GM_nodal_%d_freq_%d.jpg',metric,freq))
+        final_elec_matrix = [seg_sig_coords,sign(-1.*seg_sig_all),1./seg_pval_all];
+        %dlmwrite('output/1Jan2021/nodal_plots/render_elecs.node',final_elec_matrix,'delimiter',' ','precision',5)
+        %BrainNet_MapCfg('BrainMesh_ICBM152_smoothed.nv','output/1Jan2021/nodal_plots/render_elecs.node','dec28_option.mat',sprintf('output/1Jan2021/nodal_plots/GM_nodal_%d_freq_%d.jpg',metric,freq))
          
         % wm
-        final_elec_matrix = [wm_sig_coords,-1.*wm_sig_all,ones(size(wm_sig_coords,1),1)];
-        %dlmwrite('output/Final/dec28_plots/render_elecs.node',final_elec_matrix,'delimiter',' ','precision',5)
-        %BrainNet_MapCfg('BrainMesh_ICBM152_smoothed.nv','output/Final/dec28_plots/render_elecs.node','dec28_option.mat',sprintf('output/Final/dec28_plots/WM_nodal_%d_freq_%d.jpg',metric,freq))
-         
-        % background
-        final_elec_matrix = [background_sig_coords,-1.*seg_EVE_roi(9).data,ones(size(background_sig_coords,1),1)];
-        %dlmwrite('output/Final/dec28_plots/render_elecs.node',final_elec_matrix,'delimiter',' ','precision',5)
-        %BrainNet_MapCfg('BrainMesh_ICBM152_smoothed.nv','output/Final/dec28_plots/render_elecs.node','dec28_option.mat',sprintf('output/Final/dec28_plots/background_nodal_%d_freq_%d.jpg',metric,freq))
-         
+        final_elec_matrix = [wm_sig_coords,sign(-1.*wm_sig_all),1./wm_pval_all];
+        %dlmwrite('output/1Jan2021/nodal_plots/render_elecs.node',final_elec_matrix,'delimiter',' ','precision',5)
+        %BrainNet_MapCfg('BrainMesh_ICBM152_smoothed.nv','output/1Jan2021/nodal_plots/render_elecs.node','dec28_option.mat',sprintf('output/1Jan2021/nodal_plots/WM_nodal_%d_freq_%d.jpg',metric,freq))
+
+        %delete output/1Jan2021/nodal_plots/render_elecs.node
+        
         % do rendering
         % mean value of each ROI
         for r = 1:8
             region_values(r) = nanmean(seg_EVE_roi(r).data);
+            region_pvals(r) = p99(z).data(r);
         end
 
        min_val = min(region_values);
@@ -730,7 +943,13 @@ for metric = 1:2
        end
 
        if sum(isnan(entry))
-           entry(isnan(entry)) = floor(nanmean(entry));
+           entry(isnan(entry)) =50;
+       end
+      
+       for r = 1:8
+           if region_pvals(r)>=(0.05./64)
+               entry(r) = 50;
+           end
        end
            
        color_map_regions = color_bar(entry,:);
@@ -763,7 +982,7 @@ for metric = 1:2
        end
        
        l6 = 12;
-       l7 = 14;
+       l7 = 16;
        l8 = 14;
        
        cmap_GM = zeros(40,3);
@@ -779,18 +998,16 @@ for metric = 1:2
 
 
         
-           % now we must map colors into composite regions
-           dlmwrite(sprintf('output/Final/dec21_plots/cmap_GM_metric_%f_freq_%f.txt',metric,freq),cmap_GM,'delimiter',' ','precision',5)
-           dlmwrite(sprintf('output/Final/dec21_plots/cmap_WM_metric_%f_freq_%f.txt',metric,freq),cmap_WM,'delimiter',' ','precision',5)
+           %now we must map colors into composite regions
+           dlmwrite(sprintf('output/1Jan2021/surface_plots/cmap_GM_metric_%f_freq_%f.txt',metric,freq),cmap_GM,'delimiter',' ','precision',5)
+           dlmwrite(sprintf('output/1Jan2021/surface_plots/cmap_WM_metric_%f_freq_%f.txt',metric,freq),cmap_WM,'delimiter',' ','precision',5)
            
            
            %BrainNet_MapCfg('BrainMesh_ICBM152_smoothed.nv','JHU48.nii','JHU_surface_rendering.mat',sprintf('WM_surface_metric_%d_freq_%d.jpg',metric,freq))
            %BrainNet_MapCfg('BrainMesh_ICBM152_smoothed.nv','Yeo2011_7Networks_MNI152_FreeSurferConformed1mm_LiberalMask.nii','Yeo_surface_rendering.mat',sprintf('GM_surface_metric_%d_freq_%d.jpg',metric,freq))
          
         
-        
     end
-    
     
     
 
@@ -817,6 +1034,42 @@ for metric = 1:2
 %     hold off
             
 end
+
+non_sigs = find(all_pval>(0.05));
+
+all_median_table(non_sigs) = NaN;
+
+figure(9);clf;
+subplot(1,2,1)
+hold on
+imagesc(all_median_table(1:4,:)','AlphaData',~isnan(all_median_table(1:4,:)'))
+colormap(color_bar)
+caxis([-200 200])
+ylim([0.5 8.5])
+xlim([0.5 4.5])
+colorbar
+hold off
+subplot(1,2,2)
+hold on
+imagesc(all_median_table(5:8,:)','AlphaData',~isnan(all_median_table(5:8,:)'))
+colormap(color_bar)
+caxis([-350 350])
+ylim([0.5 8.5])
+xlim([0.5 4.5])
+colorbar
+hold off
+%%
+        for r = 1:8
+            for z = 1:8
+                this_roi_data = all_region_counts(r).data(:,:,z);
+                
+                this_roi_data(find(sum(this_roi_data,2)==0),:) = [];
+                try subregion_pvals(r,z) = chi2Tests(this_roi_data)
+                catch ME
+                    subregion_pvals(r,z) = NaN;
+                end
+            end
+        end
 
 % save('all_non_sig_struct.mat','all_non_sig_struct')
 % save('pt_non_sig_struct.mat','pt_non_sig_struct')
